@@ -148,6 +148,8 @@ void processCalib(bool from_bt) {
   imu2.off_pitch = imu2.k_pitch.angle_deg;
   imu2.off_yaw   = imu2.yaw;
 
+  // Ustalamy referencję dla kąta kolana
+
   if (from_bt) {
     if (BT.hasClient()) BT.println("[CALIB] OK (both IMUs = 0/0/0)");
     Serial.println("[CALIB] OK via BT");
@@ -213,7 +215,7 @@ void setup() {
   });
 
   last_us = micros();
-  Serial.println("[INFO] labels: time, roll1, pitch1, yaw1, roll2, pitch2, yaw2, knee_angle");
+  Serial.println("[INFO] labels: time, roll1, pitch1, yaw1, roll2, pitch2, yaw2, knee_angle, inv1, inv2");
   Serial.println("[INFO] KALIBRACJA: wyprostuj kolano, postaw noge pionowo, wyslij 'calib'");
   Serial.println("[INFO] Kalibracja kompensuje przekoszenie czujnikow wzgledem nogi");
   Serial.println("[INFO] IMU1=udo (thigh), IMU2=podudzie (shank), knee_angle=pitch2-pitch1");
@@ -284,19 +286,27 @@ void loop() {
   float pitch2 = okR2 ? (imu2.k_pitch.angle_deg - imu2.off_pitch) : -999.0f;
   float yaw2   = okR2 ? wrap180(imu2.yaw - imu2.off_yaw) : -999.0f;
 
-  // --- Kąt zgięcia kolana ---
-  // Różnica roll między czujnikami (płaszczyzna zgięcia kolana)
-  // Po kalibracji na wyprostowanej nodze: knee_angle = 0°
-  // UWAGA: Działa niezależnie od montażu - kalibracja kompensuje przekoszenie!
-  // Używamy angleDiff() aby uniknąć skoków przy przejściu przez ±180°
-  float knee_angle_raw = (okR1 && okR2) ? angleDiff(roll1, roll2) : -999.0f;
-  float knee_angle = (okR1 && okR2) ? fabs(knee_angle_raw) : -999.0f;
+  // --- Surowe flagi odwrócenia (bez histerezy): az<0 => upside-down ---
+  bool inv1_raw = (okR1 && (imu1.az < 0.0f));
+  bool inv2_raw = (okR2 && (imu2.az < 0.0f));
+
+  // --- Kąt zgięcia kolana: zależy od tego czy czujniki mają taki sam stan odwrócenia ---
+  float knee_angle = -999.0f;
+  if (okR1 && okR2) {
+    if (inv1_raw == inv2_raw) {
+      // Oba czujniki w tym samym stanie (oba normalne lub oba odwrócone)
+      knee_angle = abs(roll2 - roll1);
+    } else {
+      // Czujniki w różnych stanach (jeden odwrócony, drugi nie)
+      knee_angle = 180.0f - roll2 - roll1;
+    }
+  }
 
   // --- Wysyłanie danych na USB/BT (50 Hz = co 20 ms) ---
   if (now_us - last_send_us >= SEND_PERIOD_US) {
     last_send_us = now_us;
 
-    // USB: etykiety pod Plotter
+    // USB: etykiety pod Plotter + status odwrócenia
     Serial.print("time:");   Serial.print((unsigned long)now_us);
     Serial.print(" roll1:");  Serial.print(roll1, 2);
     Serial.print(" pitch1:"); Serial.print(pitch1, 2);
@@ -304,15 +314,18 @@ void loop() {
     Serial.print(" roll2:");  Serial.print(roll2, 2);
     Serial.print(" pitch2:"); Serial.print(pitch2, 2);
     Serial.print(" yaw2:");   Serial.print(yaw2, 2);
-    Serial.print(" knee_angle:"); Serial.println(knee_angle, 2);
+    Serial.print(" knee_angle:"); Serial.print(knee_angle, 2);
+    Serial.print(" inv1:"); Serial.print(inv1_raw ? 1 : 0);
+    Serial.print(" inv2:"); Serial.println(inv2_raw ? 1 : 0);
 
     // BT: CSV bez etykiet (szybszy parsing po stronie PC/telefonu)
     if (BT.hasClient()) {
       char out[128];
       int n = snprintf(out, sizeof(out),
-                       "%lu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                       "%lu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d\n",
                        (unsigned long)now_us,
-                       roll1, pitch1, yaw1, roll2, pitch2, yaw2, knee_angle);
+                       roll1, pitch1, yaw1, roll2, pitch2, yaw2, knee_angle,
+                       inv1_raw ? 1 : 0, inv2_raw ? 1 : 0);
       BT.write((const uint8_t*)out, n);
     }
   }
