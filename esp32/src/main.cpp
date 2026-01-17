@@ -293,10 +293,15 @@ void loop() {
   // --- Kąt zgięcia kolana: zależy od tego czy czujniki mają taki sam stan odwrócenia ---
   float knee_angle = -999.0f;
   if (okR1 && okR2) {
-    if (inv1_raw == inv2_raw) {
+    if (inv1_raw == 0 && inv2_raw == 0) {
       // Oba czujniki w tym samym stanie (oba normalne lub oba odwrócone)
-      knee_angle = abs(roll2 - roll1);
-    } else {
+      knee_angle = roll2 - roll1;
+    }
+    else if (inv1_raw == 1 && inv2_raw == 1) {
+      // Oba czujniki w tym samym stanie (oba normalne lub oba odwrócone)
+      knee_angle = roll1 - roll2;
+    } 
+    else {
       // Czujniki w różnych stanach (jeden odwrócony, drugi nie)
       knee_angle = 180.0f - roll2 - roll1;
     }
