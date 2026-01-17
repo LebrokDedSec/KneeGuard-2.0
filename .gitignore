@@ -1,0 +1,59 @@
+# ESP32 Firmware
+esp32_firmware/.pio/
+esp32_firmware/.vscode/
+esp32_firmware/lib/
+esp32_firmware/.pioenvs/
+esp32_firmware/.piolibdeps/
+esp32_firmware/.clang_complete
+esp32_firmware/.gcc-flags.json
+
+# Flutter
+flutter_app/.dart_tool/
+flutter_app/.packages
+flutter_app/build/
+flutter_app/.flutter-plugins
+flutter_app/.flutter-plugins-dependencies
+flutter_app/pubspec.lock
+flutter_app/.metadata
+
+# Android
+flutter_app/android/.gradle/
+flutter_app/android/local.properties
+flutter_app/android/captures/
+flutter_app/android/gradlew
+flutter_app/android/gradlew.bat
+flutter_app/android/gradle/
+flutter_app/android/.idea/
+flutter_app/android/app/google-services.json
+
+# iOS
+flutter_app/ios/Pods/
+flutter_app/ios/.symlinks/
+flutter_app/ios/Flutter/Flutter.framework
+flutter_app/ios/Flutter/Flutter.podspec
+flutter_app/ios/.generated/
+flutter_app/ios/Flutter/Generated.xcconfig
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.exe
+*.dll
+*.dylib
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
