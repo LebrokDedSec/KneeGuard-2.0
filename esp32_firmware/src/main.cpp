@@ -97,7 +97,7 @@ void setup() {
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
     pAdvertising->setMinPreferred(0x06);
-    pAdvertising->setMinPreferred(0x12);
+    pAdvertising->setMaxPreferred(0x12);
     NimBLEDevice::startAdvertising();
     Serial.println("Characteristic defined! Now you can read it in your phone!");
 }

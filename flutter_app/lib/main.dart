@@ -3,6 +3,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:convert';
 import 'dart:async';
+import 'constants.dart';
 
 void main() {
   runApp(const KneeGuardApp());
@@ -32,7 +33,6 @@ class DeviceListScreen extends StatefulWidget {
 }
 
 class _DeviceListScreenState extends State<DeviceListScreen> {
-  FlutterBluePlus flutterBlue = FlutterBluePlus();
   List<ScanResult> scanResults = [];
   bool isScanning = false;
   StreamSubscription<List<ScanResult>>? scanSubscription;
@@ -64,7 +64,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
         });
       });
     } catch (e) {
-      print('Error starting scan: $e');
+      debugPrint('Error starting scan: $e');
     }
 
     await Future.delayed(const Duration(seconds: 4));
@@ -145,9 +145,6 @@ class DeviceScreen extends StatefulWidget {
 }
 
 class _DeviceScreenState extends State<DeviceScreen> {
-  static const String SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-  static const String CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
-
   bool isConnected = false;
   BluetoothCharacteristic? targetCharacteristic;
   String statusText = "Disconnected";
@@ -170,9 +167,9 @@ class _DeviceScreenState extends State<DeviceScreen> {
       List<BluetoothService> services = await widget.device.discoverServices();
       
       for (var service in services) {
-        if (service.uuid.toString().toLowerCase() == SERVICE_UUID.toLowerCase()) {
+        if (service.uuid.toString().toLowerCase() == BleConstants.serviceUuid.toLowerCase()) {
           for (var characteristic in service.characteristics) {
-            if (characteristic.uuid.toString().toLowerCase() == CHARACTERISTIC_UUID.toLowerCase()) {
+            if (characteristic.uuid.toString().toLowerCase() == BleConstants.characteristicUuid.toLowerCase()) {
               targetCharacteristic = characteristic;
               
               // Subscribe to notifications
