@@ -140,8 +140,8 @@ flutter logs --clear
 
 W kodzie dodano logi do konsoli:
 ```dart
-print('Error starting scan: $e');
-print('Client connected');
+debugPrint('Error starting scan: $e');
+debugPrint('Client connected');
 ```
 
 ### Android Logcat

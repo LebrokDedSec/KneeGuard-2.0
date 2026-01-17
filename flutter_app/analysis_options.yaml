@@ -4,7 +4,6 @@ linter:
   rules:
     - prefer_const_constructors
     - prefer_const_literals_to_create_immutables
-    - avoid_print: false
     - prefer_single_quotes
     - always_declare_return_types
     - annotate_overrides
