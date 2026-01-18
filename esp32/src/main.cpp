@@ -142,7 +142,7 @@ int readWho(uint8_t addr) {
 //   3. Wyślij komendę 'calib'
 // EFEKT:
 //   - Aktualna pozycja każdego czujnika = 0° (bez względu na montaż)
-//   - Kąt zgięcia kolana (pitch2-pitch1) = 0° dla wyprostowanej nogi
+//   - Kąt zgięcia kolana (|angleDiff(roll2, roll1)|) = 0° dla wyprostowanej nogi
 //   - Dalsze pomiary są względem tej pozycji referencyjnej
 void processCalib(bool from_bt) {
   // Zerowanie aktualnej pozycji obu IMU (offsety roll/pitch/yaw).
@@ -223,7 +223,7 @@ void setup() {
   Serial.println("[INFO] labels: time, roll1, pitch1, yaw1, roll2, pitch2, yaw2, knee_angle, inv1, inv2");
   Serial.println("[INFO] KALIBRACJA: wyprostuj kolano, postaw noge pionowo, wyslij 'calib'");
   Serial.println("[INFO] Kalibracja kompensuje przekoszenie czujnikow wzgledem nogi");
-  Serial.println("[INFO] IMU1=udo (thigh), IMU2=podudzie (shank), knee_angle=pitch2-pitch1");
+  Serial.println("[INFO] IMU1=udo (thigh), IMU2=podudzie (shank), knee_angle=|angleDiff(roll2, roll1)|");
 }
 
 void loop() {
