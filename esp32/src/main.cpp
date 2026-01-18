@@ -28,8 +28,10 @@ static const float GYRO_LSB_PER_DPS = 65.5f;
 
 // ===== Kalman 1D =====
 struct Kalman1D { float angle_deg = 0.0f; float uncert = 4.0f; };
-static const float KALMAN_Q = 16.0f; // (deg/s)^2
-static const float KALMAN_R =  9.0f; // (deg)^2
+// Q = niepewność żyroskopu (drift, szum); R = niepewność akcelerometru (dynamiczne przyspieszenia)
+// Dla szybkich przejść przez az=0: niskie R zapewnia szybką korekcję podczas negacji roll/pitch
+static const float KALMAN_Q = 16.0f; // (deg/s)^2 - proces (żyroskop)
+static const float KALMAN_R =  1.0f; // (deg)^2 - pomiar (akcelerometr) - niskie = szybka korekcja
 
 static inline void kalman_update(Kalman1D& k, float rate_dps, float meas_deg, float dt) {
   k.angle_deg += dt * rate_dps;
@@ -106,8 +108,11 @@ bool readIMU(uint8_t addr, float& ax, float& ay, float& az, float& gx, float& gy
 }
 
 static inline void accelAngles(float ax, float ay, float az, float& roll, float& pitch) {
-  roll  = atan2f(ay, sqrtf(ax * ax + az * az)) * 180.0f / (float)PI;
-  pitch = -atan2f(ax, sqrtf(ay * ay + az * az)) * 180.0f / (float)PI;
+  // Standardowe wzory z atan2: poprawnie obsługują znak az (czyli także pozycję "do góry nogami")
+  // roll  w zakresie [-180..180]
+  // pitch w zakresie [-90..90]
+  roll  = atan2f(ay, az) * 180.0f / (float)PI;
+  pitch = atan2f(-ax, sqrtf(ay * ay + az * az)) * 180.0f / (float)PI;
 }
 
 void calibrateGyro(ImuState& S, uint8_t addr, int N = 1200) {
@@ -246,6 +251,7 @@ void loop() {
   float rAcc1 = 0, pAcc1 = 0; bool okR1 = false, okR2 = false;
   if (readIMU(MPU1_ADDR, imu1.ax, imu1.ay, imu1.az, imu1.gx, imu1.gy, imu1.gz)) {
     okR1 = true;
+
     imu1.gx -= imu1.bgx; imu1.gy -= imu1.bgy; imu1.gz -= imu1.bgz;
     accelAngles(imu1.ax, imu1.ay, imu1.az, rAcc1, pAcc1);
     kalman_update(imu1.k_roll,  imu1.gx, rAcc1, dt);
@@ -259,6 +265,7 @@ void loop() {
   float rAcc2 = 0, pAcc2 = 0;
   if (readIMU(MPU2_ADDR, imu2.ax, imu2.ay, imu2.az, imu2.gx, imu2.gy, imu2.gz)) {
     okR2 = true;
+
     imu2.gx -= imu2.bgx; imu2.gy -= imu2.bgy; imu2.gz -= imu2.bgz;
     accelAngles(imu2.ax, imu2.ay, imu2.az, rAcc2, pAcc2);
     kalman_update(imu2.k_roll,  imu2.gx, rAcc2, dt);
@@ -290,22 +297,9 @@ void loop() {
   bool inv1_raw = (okR1 && (imu1.az < 0.0f));
   bool inv2_raw = (okR2 && (imu2.az < 0.0f));
 
-  // --- Kąt zgięcia kolana: zależy od tego czy czujniki mają taki sam stan odwrócenia ---
-  float knee_angle = -999.0f;
-  if (okR1 && okR2) {
-    if (inv1_raw == 0 && inv2_raw == 0) {
-      // Oba czujniki w tym samym stanie (oba normalne lub oba odwrócone)
-      knee_angle = roll2 - roll1;
-    }
-    else if (inv1_raw == 1 && inv2_raw == 1) {
-      // Oba czujniki w tym samym stanie (oba normalne lub oba odwrócone)
-      knee_angle = roll1 - roll2;
-    } 
-    else {
-      // Czujniki w różnych stanach (jeden odwrócony, drugi nie)
-      knee_angle = 180.0f - roll2 - roll1;
-    }
-  }
+  // --- Kąt zgięcia kolana (stabilny): minimalna dodatnia różnica kątowa 0..180 ---
+  // angleDiff() już uwzględnia przejście przez ±180, więc nie będzie skoków ani ujemnych przeskoków.
+  float knee_angle = (okR1 && okR2) ? fabsf(angleDiff(roll2, roll1)) : -999.0f;
 
   // --- Wysyłanie danych na USB/BT (50 Hz = co 20 ms) ---
   if (now_us - last_send_us >= SEND_PERIOD_US) {
