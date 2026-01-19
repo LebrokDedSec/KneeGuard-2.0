@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() {
   runApp(const MyApp());
@@ -95,6 +97,12 @@ class _HomeScreenState extends State<HomeScreen> {
   double _kneeAngle = 0.0;
   final List<double> _kneeAngleHistory = [];
 
+  // Recording variables
+  bool _isRecording = false;
+  Timer? _recordingTimer;
+  File? _recordingFile;
+  String? _lastRecordedFilePath;
+
   @override
   void initState() {
     super.initState();
@@ -104,6 +112,13 @@ class _HomeScreenState extends State<HomeScreen> {
       await _ensureBluetoothEnabled();
       _getPairedDevices();
     });
+  }
+
+  @override
+  void dispose() {
+    _recordingTimer?.cancel();
+    _disconnect();
+    super.dispose();
   }
 
   Future<void> _ensurePermissions() async {
@@ -298,23 +313,50 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  @override
-  void dispose() {
-    _disconnect();
-    super.dispose();
-  }
-
   Widget _buildDeviceTile(BluetoothDevice d) {
     bool isSelected = _selected?.address == d.address;
-    return ListTile(
-      title: Text(d.name ?? d.address, style: const TextStyle(color: Colors.white)),
-      subtitle: Text(d.address, style: const TextStyle(color: Color(0xFFECECEC))),
-      trailing: isSelected && _isConnected
-          ? const Text('connected', style: TextStyle(color: Colors.lightGreenAccent))
-          : ElevatedButton(
-              child: const Text('Connect'),
-              onPressed: () => _connectTo(d),
-            ),
+    bool isKneeGuard = d.name?.toLowerCase().contains('kneeguard') ?? false;
+    
+    return Container(
+      decoration: isKneeGuard
+          ? BoxDecoration(
+              border: Border.all(color: const Color(0xFFF2C400), width: 2),
+              borderRadius: BorderRadius.circular(8),
+            )
+          : null,
+      child: ListTile(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (isKneeGuard) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF2C400),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Text(
+                  'Recommended',
+                  style: TextStyle(
+                    color: Color(0xFF0B0B0B),
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+            ],
+            Text(d.name ?? d.address, style: const TextStyle(color: Colors.white)),
+          ],
+        ),
+        subtitle: Text(d.address, style: const TextStyle(color: Color(0xFFECECEC))),
+        trailing: isSelected && _isConnected
+            ? const Text('connected', style: TextStyle(color: Colors.lightGreenAccent))
+            : ElevatedButton(
+                child: const Text('Connect'),
+                onPressed: () => _connectTo(d),
+              ),
+      ),
     );
   }
 
@@ -745,6 +787,236 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _toggleRecording() async {
+    if (_isRecording) {
+      // Stop recording
+      _recordingTimer?.cancel();
+      _recordingTimer = null;
+      
+      // Save the path before clearing the file
+      final lastPath = _recordingFile?.path;
+      _recordingFile = null;
+      
+      setState(() {
+        _isRecording = false;
+        if (lastPath != null) {
+          _lastRecordedFilePath = lastPath;
+        }
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Recording stopped'),
+            duration: Duration(seconds: 2),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } else {
+      // Start recording
+      try {
+        // Request storage permission
+        var status = await Permission.storage.request();
+        if (!status.isGranted) {
+          status = await Permission.manageExternalStorage.request();
+        }
+
+        // Get the app's external storage directory
+        Directory? directory;
+        if (Platform.isAndroid) {
+          directory = await getExternalStorageDirectory();
+          if (directory != null) {
+            // Create KneeGuard subfolder
+            directory = Directory('${directory.path}/KneeGuard');
+            if (!await directory.exists()) {
+              await directory.create(recursive: true);
+            }
+          }
+        } else {
+          directory = await getApplicationDocumentsDirectory();
+          if (directory != null) {
+            directory = Directory('${directory.path}/KneeGuard');
+            if (!await directory.exists()) {
+              await directory.create(recursive: true);
+            }
+          }
+        }
+
+        if (directory != null) {
+          final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+          final file = File('${directory.path}/KneeGuard_$timestamp.csv');
+          
+          // Create CSV header
+          final content = 'Timestamp,Time,Roll1,Pitch1,Yaw1,Roll2,Pitch2,Yaw2,KneeAngle\n';
+          await file.writeAsString(content);
+          
+          _recordingFile = file;
+          
+          setState(() {
+            _isRecording = true;
+          });
+          
+          // Start timer to write data every 1 second
+          _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+            _writeDataToFile();
+          });
+          
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Recording started: ${file.path}'),
+                duration: const Duration(seconds: 3),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error starting recording: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _writeDataToFile() async {
+    if (_recordingFile == null) return;
+    
+    try {
+      final timestamp = DateTime.now().toIso8601String();
+      final line = '$timestamp,${_latest['time']},${_latest['roll1']},${_latest['pitch1']},${_latest['yaw1']},${_latest['roll2']},${_latest['pitch2']},${_latest['yaw2']},${_kneeAngle.toStringAsFixed(2)}\n';
+      
+      await _recordingFile!.writeAsString(line, mode: FileMode.append);
+    } catch (e) {
+      debugPrint('Error writing to file: $e');
+    }
+  }
+
+  Widget _buildDataTab() {
+    return Padding(
+      padding: const EdgeInsets.all(12.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text('Data Recording', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+          const SizedBox(height: 20),
+          Card(
+            color: const Color(0xFF5A5A5A),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                children: [
+                  const Icon(Icons.save_alt, size: 48, color: Color(0xFFF2C400)),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Create a new CSV file to record data',
+                    style: TextStyle(color: Colors.white, fontSize: 16),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    onPressed: _toggleRecording,
+                    icon: Icon(_isRecording ? Icons.stop : Icons.fiber_manual_record),
+                    label: Text(_isRecording ? 'Stop Recording' : 'Start Recording'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      backgroundColor: _isRecording ? Colors.red : const Color(0xFFF2C400),
+                    ),
+                  ),
+                  if (_isRecording) ...[  
+                    const SizedBox(height: 12),
+                    const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.circle, color: Colors.red, size: 12),
+                        SizedBox(width: 8),
+                        Text(
+                          'Recording in progress...',
+                          style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          if (_lastRecordedFilePath != null) ...[
+            Card(
+              color: const Color(0xFF5A5A5A),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.check_circle, color: Colors.green, size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          'Last Recorded File:',
+                          style: TextStyle(color: Color(0xFFF2C400), fontWeight: FontWeight.bold, fontSize: 16),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Location:',
+                      style: TextStyle(color: Color(0xFFECECEC), fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _lastRecordedFilePath!,
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+          const Card(
+            color: Color(0xFF5A5A5A),
+            child: Padding(
+              padding: EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'File Location:',
+                    style: TextStyle(color: Color(0xFFF2C400), fontWeight: FontWeight.bold),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'Files will be saved to the app\'s storage folder:\n/Android/data/com.example.kneeapp_v3/files/KneeGuard/',
+                    style: TextStyle(color: Color(0xFFECECEC)),
+                  ),
+                  SizedBox(height: 12),
+                  Text(
+                    'File Format:',
+                    style: TextStyle(color: Color(0xFFF2C400), fontWeight: FontWeight.bold),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    'CSV with columns: Timestamp, Time, Roll1, Pitch1, Yaw1, Roll2, Pitch2, Yaw2, KneeAngle\nData is recorded every 1 second',
+                    style: TextStyle(color: Color(0xFFECECEC)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSetupTab() {
     return Padding(
       padding: const EdgeInsets.all(12.0),
@@ -793,7 +1065,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 3,
+      length: 4,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('KneeGuard Viewer'),
@@ -801,6 +1073,7 @@ class _HomeScreenState extends State<HomeScreen> {
             tabs: [
               Tab(text: 'IMU'),
               Tab(text: 'Angle'),
+              Tab(text: 'Record'),
               Tab(text: 'Setup'),
             ],
             labelColor: Color(0xFF0B0B0B),
@@ -819,6 +1092,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _buildImuTab(),
             _buildAngleTab(),
+            _buildDataTab(),
             _buildSetupTab(),
           ],
         ),
