@@ -413,25 +413,38 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   double _countFlexionCycles(List<double> data) {
     if (data.length < 3) return 0.0;
 
-    // Define a threshold for detecting peaks (e.g., 70% of max in window)
-    final maxVal = data.reduce((a, b) => a > b ? a : b);
-    final threshold = maxVal * 0.6;
+    // Filter out noise: minimum angle change to consider as real movement
+    final double minAmplitude = 5.0; // degrees
 
-    int peakCount = 0;
-    bool aboveThreshold = false;
+    // Track direction changes with amplitude threshold
+    int cycleCount = 0;
+    double? lastExtreme; // last min or max value
+    bool? lastDirection; // true if last direction was up, false if down
 
-    for (int i = 0; i < data.length; i++) {
-      if (!aboveThreshold && data[i] >= threshold) {
-        aboveThreshold = true;
-        peakCount++;
-      } else if (aboveThreshold && data[i] < threshold) {
-        aboveThreshold = false;
+    for (int i = 1; i < data.length; i++) {
+      double change = data[i] - data[i - 1];
+
+      // Only track significant changes (> 0.5 degrees per sample)
+      if (change.abs() < 0.5) continue;
+
+      bool currentDirection = change > 0; // true if going up
+
+      // If direction changed and amplitude is sufficient, count as cycle
+      if (lastDirection != null && lastDirection != currentDirection) {
+        if (lastExtreme != null) {
+          double amplitude = (data[i] - lastExtreme).abs();
+          if (amplitude >= minAmplitude) {
+            cycleCount++;
+          }
+        }
       }
+
+      lastDirection = currentDirection;
+      lastExtreme = data[i];
     }
 
     // Convert to frequency (cycles per minute)
-    // peakCount is number of cycles in the window (e.g., 30 seconds)
-    double cyclesPerSecond = peakCount / _analysisWindowSeconds;
+    double cyclesPerSecond = cycleCount / _analysisWindowSeconds;
     double cyclesPerMinute = cyclesPerSecond * 60;
 
     return cyclesPerMinute;
@@ -1461,7 +1474,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             tabs: [
               Tab(text: 'IMU'),
               Tab(text: 'Angle'),
-              Tab(text: 'Analysis'),
+              Tab(text: 'Stats'),
               Tab(text: 'Record'),
               Tab(text: 'Setup'),
             ],
