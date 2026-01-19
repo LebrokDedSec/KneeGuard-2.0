@@ -1,10 +1,16 @@
-# Folder aplikacji
+# kneeapp_v3
 
-Ten katalog przeznaczony jest na kod i zasoby aplikacji (UI/serwer/klient — według wybranego stosu).
+A new Flutter project.
 
-Proponowana struktura (opcjonalnie):
-- `src/` — źródła aplikacji
-- `docs/` — dokumentacja
-- `tests/` — testy
+## Getting Started
 
-W razie potrzeby mogę zainicjalizować projekt (np. Node.js, Python, Flutter).
+This project is a starting point for a Flutter application.
+
+A few resources to get you started if this is your first Flutter project:
+
+- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
+- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+
+For help getting started with Flutter development, view the
+[online documentation](https://docs.flutter.dev/), which offers tutorials,
+samples, guidance on mobile development, and a full API reference.

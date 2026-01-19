@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Provide fallback declaration for lStar used by some libraries (Material3/color state lists).
+         This prevents AAPT errors when compiling against older platform SDKs or mismatched libraries. -->
+    <attr name="lStar" format="float" />
+</resources>
