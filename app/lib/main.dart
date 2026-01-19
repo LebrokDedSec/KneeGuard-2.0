@@ -54,7 +54,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   List<BluetoothDevice> _devices = [];
   BluetoothDevice? _selected;
   BluetoothConnection? _connection;
@@ -97,11 +97,31 @@ class _HomeScreenState extends State<HomeScreen> {
   double _kneeAngle = 0.0;
   final List<double> _kneeAngleHistory = [];
 
+  // Analysis variables (for movement analysis)
+  final List<Map<String, dynamic>> _angleTimeSeries = []; // {timestamp, angle}
+  final int _analysisWindowSeconds = 30; // analyze last 30 seconds
+  Timer? _analysisTimer;
+  
+  // Current analysis metrics
+  double _rangeOfMotion = 0.0;
+  double _maxFlexion = 0.0;
+  double _flexionFrequency = 0.0;
+  
+  // History for analysis charts (last 30 data points = 30 seconds)
+  final List<double> _romHistory = [];
+  final List<double> _maxFlexionHistory = [];
+  final List<double> _frequencyHistory = [];
+  final int _maxAnalysisHistoryLength = 30;
+
   // Recording variables
   bool _isRecording = false;
   Timer? _recordingTimer;
   File? _recordingFile;
   String? _lastRecordedFilePath;
+  
+  // Animation for REC indicator
+  late AnimationController _recAnimationController;
+  late Animation<double> _recOpacity;
 
   @override
   void initState() {
@@ -112,11 +132,25 @@ class _HomeScreenState extends State<HomeScreen> {
       await _ensureBluetoothEnabled();
       _getPairedDevices();
     });
+    
+    // Start analysis timer (update every 1 second)
+    _analysisTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _updateAnalysis();
+    });
+    
+    // Animation for REC indicator (blinking dot)
+    _recAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    )..repeat();
+    _recOpacity = Tween<double>(begin: 1.0, end: 0.3).animate(_recAnimationController);
   }
 
   @override
   void dispose() {
     _recordingTimer?.cancel();
+    _analysisTimer?.cancel();
+    _recAnimationController.dispose();
     _disconnect();
     super.dispose();
   }
@@ -281,6 +315,15 @@ class _HomeScreenState extends State<HomeScreen> {
           _kneeAngle = (roll2 - roll1).abs();
           _kneeAngleHistory.add(_kneeAngle);
           if (_kneeAngleHistory.length > _maxHistoryLength) _kneeAngleHistory.removeAt(0);
+          
+          // Add to time series for analysis (with timestamp)
+          _angleTimeSeries.add({
+            'timestamp': DateTime.now(),
+            'angle': _kneeAngle,
+          });
+          // Remove old data (older than analysis window + buffer)
+          final cutoffTime = DateTime.now().subtract(Duration(seconds: _analysisWindowSeconds + 30));
+          _angleTimeSeries.removeWhere((item) => item['timestamp'].isBefore(cutoffTime));
         }
       });
     }
@@ -294,6 +337,23 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _isConnected = false;
       _selected = null;
+      
+      // Clear all history data
+      _roll1History.clear();
+      _pitch1History.clear();
+      _yaw1History.clear();
+      _roll2History.clear();
+      _pitch2History.clear();
+      _yaw2History.clear();
+      _kneeAngleHistory.clear();
+      _angleTimeSeries.clear();
+      _romHistory.clear();
+      _maxFlexionHistory.clear();
+      _frequencyHistory.clear();
+      _rangeOfMotion = 0.0;
+      _maxFlexion = 0.0;
+      _flexionFrequency = 0.0;
+      _kneeAngle = 0.0;
     });
   }
 
@@ -311,6 +371,70 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       }
     }
+  }
+
+  void _updateAnalysis() {
+    if (_angleTimeSeries.isEmpty) return;
+
+    // Get data from the analysis window (last N seconds)
+    final cutoffTime = DateTime.now().subtract(Duration(seconds: _analysisWindowSeconds));
+    final windowData = _angleTimeSeries
+        .where((item) => item['timestamp'].isAfter(cutoffTime))
+        .map((item) => item['angle'] as double)
+        .toList();
+
+    if (windowData.isEmpty) return;
+
+    setState(() {
+      // 1. Range of Motion (ROM) = max - min in window
+      final maxAngle = windowData.reduce((a, b) => a > b ? a : b);
+      final minAngle = windowData.reduce((a, b) => a < b ? a : b);
+      _rangeOfMotion = maxAngle - minAngle;
+
+      // 2. Max Flexion = maximum angle in window
+      _maxFlexion = maxAngle;
+
+      // 3. Flexion Frequency = count flexion cycles (peaks)
+      // A flexion cycle is when angle goes above a threshold, then below
+      _flexionFrequency = _countFlexionCycles(windowData);
+
+      // Add to history for charts
+      _romHistory.add(_rangeOfMotion);
+      if (_romHistory.length > _maxAnalysisHistoryLength) _romHistory.removeAt(0);
+
+      _maxFlexionHistory.add(_maxFlexion);
+      if (_maxFlexionHistory.length > _maxAnalysisHistoryLength) _maxFlexionHistory.removeAt(0);
+
+      _frequencyHistory.add(_flexionFrequency);
+      if (_frequencyHistory.length > _maxAnalysisHistoryLength) _frequencyHistory.removeAt(0);
+    });
+  }
+
+  double _countFlexionCycles(List<double> data) {
+    if (data.length < 3) return 0.0;
+
+    // Define a threshold for detecting peaks (e.g., 70% of max in window)
+    final maxVal = data.reduce((a, b) => a > b ? a : b);
+    final threshold = maxVal * 0.6;
+
+    int peakCount = 0;
+    bool aboveThreshold = false;
+
+    for (int i = 0; i < data.length; i++) {
+      if (!aboveThreshold && data[i] >= threshold) {
+        aboveThreshold = true;
+        peakCount++;
+      } else if (aboveThreshold && data[i] < threshold) {
+        aboveThreshold = false;
+      }
+    }
+
+    // Convert to frequency (cycles per minute)
+    // peakCount is number of cycles in the window (e.g., 30 seconds)
+    double cyclesPerSecond = peakCount / _analysisWindowSeconds;
+    double cyclesPerMinute = cyclesPerSecond * 60;
+
+    return cyclesPerMinute;
   }
 
   Widget _buildDeviceTile(BluetoothDevice d) {
@@ -787,6 +911,300 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildAnalysisTab() {
+    return Padding(
+      padding: const EdgeInsets.all(12.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Current metrics (3 cards in a row)
+          Row(
+            children: [
+              Expanded(
+                child: Card(
+                  color: const Color(0xFF5A5A5A),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      children: [
+                        const Text(
+                          'Range of Motion',
+                          style: TextStyle(fontSize: 12, color: Color(0xFFECECEC)),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${_rangeOfMotion.toStringAsFixed(1)}°',
+                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFFF2C400)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Card(
+                  color: const Color(0xFF5A5A5A),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      children: [
+                        const Text(
+                          'Max Flexion',
+                          style: TextStyle(fontSize: 12, color: Color(0xFFECECEC)),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${_maxFlexion.toStringAsFixed(1)}°',
+                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFFF2C400)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Card(
+                  color: const Color(0xFF5A5A5A),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      children: [
+                        const Text(
+                          'Flexion Freq.',
+                          style: TextStyle(fontSize: 12, color: Color(0xFFECECEC)),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${_flexionFrequency.toStringAsFixed(1)}',
+                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFFF2C400)),
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'cycles/min',
+                          style: TextStyle(fontSize: 10, color: Color(0xFFECECEC)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          
+          // Charts (3 charts stacked vertically)
+          Expanded(
+            child: ListView(
+              children: [
+                // ROM History Chart
+                const Text('Range of Motion History', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 150,
+                  child: Card(
+                    color: const Color(0xFF5A5A5A),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: _romHistory.isEmpty
+                          ? const Center(child: Text('Waiting for data...', style: TextStyle(color: Color(0xFFECECEC))))
+                          : LineChart(
+                              LineChartData(
+                                gridData: FlGridData(
+                                  show: true,
+                                  drawVerticalLine: false,
+                                  getDrawingHorizontalLine: (value) => FlLine(
+                                    color: const Color(0xFF3A3A3A),
+                                    strokeWidth: 1,
+                                  ),
+                                ),
+                                titlesData: FlTitlesData(
+                                  show: true,
+                                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  bottomTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  leftTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 35,
+                                      getTitlesWidget: (value, meta) => Text(
+                                        '${value.toInt()}°',
+                                        style: const TextStyle(color: Color(0xFFECECEC), fontSize: 9),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                borderData: FlBorderData(show: false),
+                                minX: 0,
+                                maxX: (_romHistory.length - 1).toDouble(),
+                                minY: 0,
+                                maxY: _romHistory.isEmpty ? 180 : (_romHistory.reduce((a, b) => a > b ? a : b) * 1.2),
+                                lineBarsData: [
+                                  LineChartBarData(
+                                    spots: List.generate(
+                                      _romHistory.length,
+                                      (index) => FlSpot(index.toDouble(), _romHistory[index]),
+                                    ),
+                                    isCurved: true,
+                                    color: Colors.blue,
+                                    barWidth: 2,
+                                    dotData: const FlDotData(show: false),
+                                    belowBarData: BarAreaData(
+                                      show: true,
+                                      color: Colors.blue.withOpacity(0.2),
+                                    ),
+                                  ),
+                                ],
+                                lineTouchData: const LineTouchData(enabled: false),
+                              ),
+                            ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                
+                // Max Flexion History Chart
+                const Text('Max Flexion History', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 150,
+                  child: Card(
+                    color: const Color(0xFF5A5A5A),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: _maxFlexionHistory.isEmpty
+                          ? const Center(child: Text('Waiting for data...', style: TextStyle(color: Color(0xFFECECEC))))
+                          : LineChart(
+                              LineChartData(
+                                gridData: FlGridData(
+                                  show: true,
+                                  drawVerticalLine: false,
+                                  getDrawingHorizontalLine: (value) => FlLine(
+                                    color: const Color(0xFF3A3A3A),
+                                    strokeWidth: 1,
+                                  ),
+                                ),
+                                titlesData: FlTitlesData(
+                                  show: true,
+                                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  bottomTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  leftTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 35,
+                                      getTitlesWidget: (value, meta) => Text(
+                                        '${value.toInt()}°',
+                                        style: const TextStyle(color: Color(0xFFECECEC), fontSize: 9),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                borderData: FlBorderData(show: false),
+                                minX: 0,
+                                maxX: (_maxFlexionHistory.length - 1).toDouble(),
+                                minY: 0,
+                                maxY: 180,
+                                lineBarsData: [
+                                  LineChartBarData(
+                                    spots: List.generate(
+                                      _maxFlexionHistory.length,
+                                      (index) => FlSpot(index.toDouble(), _maxFlexionHistory[index]),
+                                    ),
+                                    isCurved: true,
+                                    color: Colors.green,
+                                    barWidth: 2,
+                                    dotData: const FlDotData(show: false),
+                                    belowBarData: BarAreaData(
+                                      show: true,
+                                      color: Colors.green.withOpacity(0.2),
+                                    ),
+                                  ),
+                                ],
+                                lineTouchData: const LineTouchData(enabled: false),
+                              ),
+                            ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                
+                // Frequency History Chart
+                const Text('Flexion Frequency History', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 150,
+                  child: Card(
+                    color: const Color(0xFF5A5A5A),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: _frequencyHistory.isEmpty
+                          ? const Center(child: Text('Waiting for data...', style: TextStyle(color: Color(0xFFECECEC))))
+                          : LineChart(
+                              LineChartData(
+                                gridData: FlGridData(
+                                  show: true,
+                                  drawVerticalLine: false,
+                                  getDrawingHorizontalLine: (value) => FlLine(
+                                    color: const Color(0xFF3A3A3A),
+                                    strokeWidth: 1,
+                                  ),
+                                ),
+                                titlesData: FlTitlesData(
+                                  show: true,
+                                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  bottomTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                                  leftTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 40,
+                                      getTitlesWidget: (value, meta) => Text(
+                                        value.toStringAsFixed(0),
+                                        style: const TextStyle(color: Color(0xFFECECEC), fontSize: 9),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                borderData: FlBorderData(show: false),
+                                minX: 0,
+                                maxX: (_frequencyHistory.length - 1).toDouble(),
+                                minY: 0,
+                                maxY: _frequencyHistory.isEmpty ? 100 : (_frequencyHistory.reduce((a, b) => a > b ? a : b) * 1.2),
+                                lineBarsData: [
+                                  LineChartBarData(
+                                    spots: List.generate(
+                                      _frequencyHistory.length,
+                                      (index) => FlSpot(index.toDouble(), _frequencyHistory[index]),
+                                    ),
+                                    isCurved: true,
+                                    color: Colors.orange,
+                                    barWidth: 2,
+                                    dotData: const FlDotData(show: false),
+                                    belowBarData: BarAreaData(
+                                      show: true,
+                                      color: Colors.orange.withOpacity(0.2),
+                                    ),
+                                  ),
+                                ],
+                                lineTouchData: const LineTouchData(enabled: false),
+                              ),
+                            ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _toggleRecording() async {
     if (_isRecording) {
       // Stop recording
@@ -982,36 +1400,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 20),
           ],
-          const Card(
-            color: Color(0xFF5A5A5A),
-            child: Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'File Location:',
-                    style: TextStyle(color: Color(0xFFF2C400), fontWeight: FontWeight.bold),
-                  ),
-                  SizedBox(height: 8),
-                  Text(
-                    'Files will be saved to the app\'s storage folder:\n/Android/data/com.example.kneeapp_v3/files/KneeGuard/',
-                    style: TextStyle(color: Color(0xFFECECEC)),
-                  ),
-                  SizedBox(height: 12),
-                  Text(
-                    'File Format:',
-                    style: TextStyle(color: Color(0xFFF2C400), fontWeight: FontWeight.bold),
-                  ),
-                  SizedBox(height: 8),
-                  Text(
-                    'CSV with columns: Timestamp, Time, Roll1, Pitch1, Yaw1, Roll2, Pitch2, Yaw2, KneeAngle\nData is recorded every 1 second',
-                    style: TextStyle(color: Color(0xFFECECEC)),
-                  ),
-                ],
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -1065,7 +1453,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 4,
+      length: 5,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('KneeGuard Viewer'),
@@ -1073,14 +1461,18 @@ class _HomeScreenState extends State<HomeScreen> {
             tabs: [
               Tab(text: 'IMU'),
               Tab(text: 'Angle'),
+              Tab(text: 'Analysis'),
               Tab(text: 'Record'),
               Tab(text: 'Setup'),
             ],
             labelColor: Color(0xFF0B0B0B),
             unselectedLabelColor: Color(0xFF0B0B0B),
             indicatorColor: Color(0xFF0B0B0B),
+            labelStyle: TextStyle(fontSize: 12),
+            unselectedLabelStyle: TextStyle(fontSize: 12),
           ),
           actions: [
+            if (_isRecording) _buildRecIndicator(),
             IconButton(
               icon: const Icon(Icons.refresh),
               onPressed: _getPairedDevices,
@@ -1092,8 +1484,50 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _buildImuTab(),
             _buildAngleTab(),
+            _buildAnalysisTab(),
             _buildDataTab(),
             _buildSetupTab(),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildRecIndicator() {
+    return Padding(
+      padding: const EdgeInsets.only(right: 8.0),
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.red, width: 2),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedBuilder(
+              animation: _recOpacity,
+              builder: (context, child) => Opacity(
+                opacity: _recOpacity.value,
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    color: Colors.red,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            const Text(
+              'REC',
+              style: TextStyle(
+                color: Colors.red,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
           ],
         ),
       ),
