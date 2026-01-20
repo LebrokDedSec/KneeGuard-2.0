@@ -117,7 +117,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _isRecording = false;
   Timer? _recordingTimer;
   File? _recordingFile;
-  String? _lastRecordedFilePath;
+  File? _recordingTCXFile;
+  String? _lastRecordedCSVPath;
+  String? _lastRecordedTCXPath;
+  String? _recordingFileTimestamp;
+  
+  // Easter egg - title clicks
+  int _titleClickCount = 0;
+  DateTime? _lastTitleClickTime;
+  final int _easterEggThreshold = 5;
+  final int _clickTimeWindowMs = 500; // clicks must be within 500ms of each other
   
   // Animation for REC indicator
   late AnimationController _recAnimationController;
@@ -355,6 +364,108 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _flexionFrequency = 0.0;
       _kneeAngle = 0.0;
     });
+  }
+
+  void _onTitleClick() {
+    final now = DateTime.now();
+    
+    // Reset counter if too much time has passed
+    if (_lastTitleClickTime != null &&
+        now.difference(_lastTitleClickTime!).inMilliseconds > _clickTimeWindowMs) {
+      _titleClickCount = 0;
+    }
+    
+    _titleClickCount++;
+    _lastTitleClickTime = now;
+    
+    // Show Easter egg when threshold is reached
+    if (_titleClickCount >= _easterEggThreshold) {
+      _titleClickCount = 0;
+      _showEasterEgg();
+    }
+  }
+  
+  void _showEasterEgg() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) => Dialog(
+        backgroundColor: const Color(0xFF4B4B4B),
+        child: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Gratulacje!',
+                style: TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFFF2C400),
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Znalazłeś sekretny Easter Egg!',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.white,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(
+                  width: 250,
+                  height: 200,
+                  child: Image.network(
+                    'https://i.imgur.com/MJJ7nG2.gif',
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => Container(
+                      color: Colors.grey,
+                      child: const Center(
+                        child: Text('GIF not available', style: TextStyle(color: Colors.white)),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Powered by Monster Energy, coffee & Marlboro☕',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Color(0xFFECECEC),
+                  fontStyle: FontStyle.italic,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Jan Korbel - główny programista\n (ja tak samo jak kolano — pracuje 24/7)',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFFF2C400),
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFF2C400),
+                  foregroundColor: const Color(0xFF0B0B0B),
+                ),
+                child: const Text('Zamknij'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _sendCalibration() async {
@@ -1224,14 +1335,41 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _recordingTimer?.cancel();
       _recordingTimer = null;
       
-      // Save the path before clearing the file
-      final lastPath = _recordingFile?.path;
+      // Close TCX file with proper footer
+      if (_recordingTCXFile != null) {
+        try {
+          final footer = '''        </Track>
+        <Calories>0</Calories>
+        <Intensity>Active</Intensity>
+        <TriggerMethod>Manual</TriggerMethod>
+      </Lap>
+      <Creator>
+        <Name>KneeGuard</Name>
+        <Version>1.0</Version>
+      </Creator>
+    </Activity>
+  </Activities>
+</TrainingCenterDatabase>''';
+          await _recordingTCXFile!.writeAsString(footer, mode: FileMode.append);
+          debugPrint('TCX footer written: ${_recordingTCXFile!.path}');
+        } catch (e) {
+          debugPrint('Error closing TCX file: $e');
+        }
+      }
+      
+      // Save the paths before clearing the files
+      final lastCSVPath = _recordingFile?.path;
+      final lastTCXPath = _recordingTCXFile?.path;
       _recordingFile = null;
+      _recordingTCXFile = null;
       
       setState(() {
         _isRecording = false;
-        if (lastPath != null) {
-          _lastRecordedFilePath = lastPath;
+        if (lastCSVPath != null) {
+          _lastRecordedCSVPath = lastCSVPath;
+        }
+        if (lastTCXPath != null) {
+          _lastRecordedTCXPath = lastTCXPath;
         }
       });
       
@@ -1253,16 +1391,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           status = await Permission.manageExternalStorage.request();
         }
 
-        // Get the app's external storage directory
+        // Get Downloads directory
         Directory? directory;
         if (Platform.isAndroid) {
-          directory = await getExternalStorageDirectory();
-          if (directory != null) {
-            // Create KneeGuard subfolder
-            directory = Directory('${directory.path}/KneeGuard');
-            if (!await directory.exists()) {
-              await directory.create(recursive: true);
-            }
+          // Use Downloads folder on Android
+          directory = Directory('/storage/emulated/0/Download/KneeGuard');
+          if (!await directory.exists()) {
+            await directory.create(recursive: true);
           }
         } else {
           directory = await getApplicationDocumentsDirectory();
@@ -1276,13 +1411,31 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
         if (directory != null) {
           final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+          _recordingFileTimestamp = timestamp;
           final file = File('${directory.path}/KneeGuard_$timestamp.csv');
+          final tcxFile = File('${directory.path}/KneeGuard_$timestamp.tcx');
           
           // Create CSV header
-          final content = 'Timestamp,Time,Roll1,Pitch1,Yaw1,Roll2,Pitch2,Yaw2,KneeAngle\n';
-          await file.writeAsString(content);
+          final csvContent = 'Timestamp;RangeOfMotion;MaxFlexion;FlexionFreq\n';
+          await file.writeAsString(csvContent);
+          
+          // Create TCX header
+          final tcxHeader = '''<?xml version="1.0" encoding="UTF-8"?>
+<TrainingCenterDatabase xsi:schemaLocation="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2 http://www.garmin.com/xmlschemas/TrainingCenterDatabasev2.xsd" xmlns:ns2="http://www.garmin.com/xmlschemas/UserProfile/v2" xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Activities>
+    <Activity Sport="Other">
+      <Id>${DateTime.now().toIso8601String()}Z</Id>
+      <Lap StartTime="${DateTime.now().toIso8601String()}Z">
+        <TotalTimeSeconds>0</TotalTimeSeconds>
+        <DistanceMeters>0</DistanceMeters>
+        <Calories>0</Calories>
+        <Intensity>Active</Intensity>
+        <Track>
+''';
+          await tcxFile.writeAsString(tcxHeader);
           
           _recordingFile = file;
+          _recordingTCXFile = tcxFile;
           
           setState(() {
             _isRecording = true;
@@ -1321,11 +1474,43 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     
     try {
       final timestamp = DateTime.now().toIso8601String();
-      final line = '$timestamp,${_latest['time']},${_latest['roll1']},${_latest['pitch1']},${_latest['yaw1']},${_latest['roll2']},${_latest['pitch2']},${_latest['yaw2']},${_kneeAngle.toStringAsFixed(2)}\n';
+      final romStr = _rangeOfMotion.toStringAsFixed(2).replaceAll('.', ',');
+      final maxFlexStr = _maxFlexion.toStringAsFixed(2).replaceAll('.', ',');
+      final freqStr = _flexionFrequency.toStringAsFixed(2).replaceAll('.', ',');
+      final line = '$timestamp;$romStr;$maxFlexStr;$freqStr\n';
       
+      // Write to CSV
       await _recordingFile!.writeAsString(line, mode: FileMode.append);
+      debugPrint('Data written to CSV: $line');
+      
+      // Write to TCX
+      if (_recordingTCXFile != null) {
+        await _writeTCXTrackpoint(timestamp);
+      }
     } catch (e) {
       debugPrint('Error writing to file: $e');
+    }
+  }
+  
+  Future<void> _writeTCXTrackpoint(String timestamp) async {
+    if (_recordingTCXFile == null) return;
+    
+    try {
+      final trackpoint = '''          <Trackpoint>
+            <Time>${timestamp}Z</Time>
+            <Extensions>
+              <TPX xmlns="http://www.garmin.com/xmlschemas/ActivityExtension/v2">
+                <ROM>${_rangeOfMotion.toStringAsFixed(2)}</ROM>
+                <MaxFlexion>${_maxFlexion.toStringAsFixed(2)}</MaxFlexion>
+                <FlexionFreq>${_flexionFrequency.toStringAsFixed(2)}</FlexionFreq>
+              </TPX>
+            </Extensions>
+          </Trackpoint>
+''';
+      await _recordingTCXFile!.writeAsString(trackpoint, mode: FileMode.append);
+      debugPrint('Data written to TCX trackpoint');
+    } catch (e) {
+      debugPrint('Error writing TCX trackpoint: $e');
     }
   }
 
@@ -1346,7 +1531,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   const Icon(Icons.save_alt, size: 48, color: Color(0xFFF2C400)),
                   const SizedBox(height: 12),
                   const Text(
-                    'Create a new CSV file to record data',
+                    'Create a new CSV and TCX files to record data',
                     style: TextStyle(color: Colors.white, fontSize: 16),
                     textAlign: TextAlign.center,
                   ),
@@ -1360,26 +1545,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       backgroundColor: _isRecording ? Colors.red : const Color(0xFFF2C400),
                     ),
                   ),
-                  if (_isRecording) ...[  
-                    const SizedBox(height: 12),
-                    const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.circle, color: Colors.red, size: 12),
-                        SizedBox(width: 8),
-                        Text(
-                          'Recording in progress...',
-                          style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-                        ),
-                      ],
-                    ),
-                  ],
+
                 ],
               ),
             ),
           ),
           const SizedBox(height: 20),
-          if (_lastRecordedFilePath != null) ...[
+          if (_lastRecordedCSVPath != null || _lastRecordedTCXPath != null) ...[
             Card(
               color: const Color(0xFF5A5A5A),
               child: Padding(
@@ -1392,21 +1564,35 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                         Icon(Icons.check_circle, color: Colors.green, size: 20),
                         SizedBox(width: 8),
                         Text(
-                          'Last Recorded File:',
+                          'Last Recorded Files:',
                           style: TextStyle(color: Color(0xFFF2C400), fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                       ],
                     ),
                     const SizedBox(height: 12),
-                    Text(
-                      'Location:',
-                      style: TextStyle(color: Color(0xFFECECEC), fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _lastRecordedFilePath!,
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
+                    if (_lastRecordedCSVPath != null) ...[  
+                      const Text(
+                        'CSV File:',
+                        style: TextStyle(color: Color(0xFFECECEC), fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _lastRecordedCSVPath!,
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    if (_lastRecordedTCXPath != null) ...[  
+                      const Text(
+                        'TCX File:',
+                        style: TextStyle(color: Color(0xFFECECEC), fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _lastRecordedTCXPath!,
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1469,7 +1655,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       length: 5,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('KneeGuard Viewer'),
+          title: GestureDetector(
+            onTap: _onTitleClick,
+            child: const Text('KneeGuard Viewer'),
+          ),
           bottom: const TabBar(
             tabs: [
               Tab(text: 'IMU'),
